@@ -96,7 +96,7 @@ Misc:
 
 ## Donations
 
-The default donation fee is 2%, which can be reduced to 1% or completely disabled using the `donate-level` option. This fee applies only when you utilize more than 256 miners.
+The proxy's default donation level is 0%. An explicitly configured `donate-level` is retained. At level 0, downstream XMRig miners may still use their own donation setting through the donate-over-proxy route; this is not a proxy-level donation.
 
 * XMR: `48edfHu7V9Z84YzzMa6fUueoELZ9ZRXq9VetWzYGzKt52XU5xvqgzYnDK9URnRoJMk1j8nLwEVsaSWJ4fhdUyZijBGUicoD`
 
