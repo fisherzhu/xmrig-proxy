@@ -160,6 +160,7 @@ def run_case(binary, tls, upstream_tls, proxy_mode, cert, key):
             "colors": False,
             "mode": proxy_mode,
             "donate-level": 0,
+            "custom-diff": 100,
             "http": {"enabled": True, "host": "127.0.0.1", "port": http_port, "restricted": True},
             "bind": [{"host": "127.0.0.1", "port": port, "tls": tls}],
             "tls": True if tls else False,
@@ -197,7 +198,16 @@ def run_case(binary, tls, upstream_tls, proxy_mode, cert, key):
                     miner.sendall((json.dumps(rejected) + "\n").encode())
                     rejection = lines.read()
                     assert rejection["error"] is not None, rejection
-                    submit = {"id": 3, "method": "submit", "params": {
+                    local_target = ((1 << 64) - 1) // 1000
+                    local_result = "00" * 24 + local_target.to_bytes(8, "little").hex()
+                    local_share = {"id": 3, "method": "submit", "params": {
+                        "id": response["result"]["id"], "job_id": job["job_id"],
+                        "nonce": nonce, "result": local_result, "algo": "rx/0"}}
+                    miner.sendall((json.dumps(local_share) + "\n").encode())
+                    local_answer = lines.read()
+                    assert local_answer["error"] is None and local_answer["result"]["status"] == "OK", local_answer
+                    assert not pool.submit_event.is_set(), "custom-diff share unexpectedly reached upstream"
+                    submit = {"id": 4, "method": "submit", "params": {
                         "id": response["result"]["id"], "job_id": job["job_id"],
                         "nonce": nonce, "result": "00" * 24 + "0100000000000000", "algo": "rx/0"}}
                     miner.sendall((json.dumps(submit) + "\n").encode())
@@ -214,7 +224,7 @@ def run_case(binary, tls, upstream_tls, proxy_mode, cert, key):
                     assert writes["peak_owned_bytes"] > 0, writes
                     assert writes["over_limit"] == 0 and writes["immediate_error"] == 0, writes
                     assert writes["callback_error"] == 0, writes
-                    print("%s login/24 ordered jobs/reject/submit OK" % mode)
+                    print("%s login/24 ordered jobs/reject/local share/submit OK" % mode)
             except Exception as exc:
                 failure = exc
                 tail = log_path.read_text(errors="replace")[-4000:]
