@@ -201,12 +201,16 @@ target_link_libraries(${CMAKE_PROJECT_NAME} ${OPENSSL_LIBRARIES} ${UV_LIBRARIES}
 
 if (WITH_T6_TESTS)
     enable_testing()
+    find_package(PythonInterp 3 REQUIRED)
     add_executable(t6-owned-stream-writer-test
         tests/OwnedStreamWriter.test.cpp
         src/base/net/tools/OwnedStreamWriter.cpp)
     target_include_directories(t6-owned-stream-writer-test PRIVATE src ${UV_INCLUDE_DIRS})
     target_link_libraries(t6-owned-stream-writer-test ${UV_LIBRARIES} ${EXTRA_LIBS})
     add_test(NAME t6-owned-stream-writer COMMAND t6-owned-stream-writer-test)
+    add_test(NAME t6-stratum-transport
+        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/StratumTransport.integration.py $<TARGET_FILE:${CMAKE_PROJECT_NAME}>)
+    set_tests_properties(t6-stratum-transport PROPERTIES TIMEOUT 60)
 endif()
 
 if (CMAKE_CXX_COMPILER_ID MATCHES Clang AND CMAKE_BUILD_TYPE STREQUAL Release AND NOT CMAKE_GENERATOR STREQUAL Xcode)
