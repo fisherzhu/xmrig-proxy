@@ -171,6 +171,7 @@ def run_case(binary, tls, upstream_tls, proxy_mode, cert, key):
         with log_path.open("wb") as output:
             process = subprocess.Popen([str(binary), "-c", str(config_path), "--no-color"],
                                        cwd=str(root), stdout=output, stderr=subprocess.STDOUT)
+            failure = None
             try:
                 with connect_miner(port, tls, process, log_path) as miner:
                     lines = JsonLines(miner)
@@ -208,16 +209,22 @@ def run_case(binary, tls, upstream_tls, proxy_mode, cert, key):
                     assert writes["over_limit"] == 0 and writes["immediate_error"] == 0, writes
                     assert writes["callback_error"] == 0, writes
                     print("%s login/24 ordered jobs/submit OK" % mode)
+            except Exception as exc:
+                failure = exc
+                tail = log_path.read_text(errors="replace")[-4000:]
+                raise RuntimeError("%s failed: %s; proxy exit=%r; proxy log tail:\n%s" %
+                                   (mode, exc, process.poll(), tail)) from exc
             finally:
-                process.terminate()
+                if process.poll() is None:
+                    process.terminate()
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
                 pool.close()
-                if pool.error:
-                    raise pool.error
+                if pool.error and failure is None:
+                    raise RuntimeError("fake upstream failed: %s" % pool.error)
 
 
 def main():
