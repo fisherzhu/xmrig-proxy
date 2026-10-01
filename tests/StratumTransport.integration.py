@@ -191,7 +191,13 @@ def run_case(binary, tls, upstream_tls, proxy_mode, cert, key):
                         assert notification["params"]["job_id"] == "t6-fixture-job-%d" % number, notification
                     job = notification["params"]
                     nonce = "000000" + job["blob"][84:86] if proxy_mode == "nicehash" else "00000001"
-                    submit = {"id": 2, "method": "submit", "params": {
+                    rejected = {"id": 2, "method": "submit", "params": {
+                        "id": response["result"]["id"], "job_id": "not-assigned",
+                        "nonce": nonce, "result": "00" * 24 + "0100000000000000", "algo": "rx/0"}}
+                    miner.sendall((json.dumps(rejected) + "\n").encode())
+                    rejection = lines.read()
+                    assert rejection["error"] is not None, rejection
+                    submit = {"id": 3, "method": "submit", "params": {
                         "id": response["result"]["id"], "job_id": job["job_id"],
                         "nonce": nonce, "result": "00" * 24 + "0100000000000000", "algo": "rx/0"}}
                     miner.sendall((json.dumps(submit) + "\n").encode())
@@ -208,7 +214,7 @@ def run_case(binary, tls, upstream_tls, proxy_mode, cert, key):
                     assert writes["peak_owned_bytes"] > 0, writes
                     assert writes["over_limit"] == 0 and writes["immediate_error"] == 0, writes
                     assert writes["callback_error"] == 0, writes
-                    print("%s login/24 ordered jobs/submit OK" % mode)
+                    print("%s login/24 ordered jobs/reject/submit OK" % mode)
             except Exception as exc:
                 failure = exc
                 tail = log_path.read_text(errors="replace")[-4000:]

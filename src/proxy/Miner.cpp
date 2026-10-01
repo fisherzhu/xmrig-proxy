@@ -268,7 +268,8 @@ bool xmrig::Miner::parseRequest(int64_t id, const char *method, const rapidjson:
 
         Algorithm algorithm(Json::getString(params, "algo"));
 
-        SubmitEvent *event = SubmitEvent::create(this, id, Json::getString(params, "job_id"), Json::getString(params, "nonce"), Json::getString(params, "result"), algorithm, Json::getString(params, "sig"), m_signatureData, Json::getString(params, "commitment"), m_viewTag, m_extraNonce);
+        Error::Code submitError = Error::NoError;
+        SubmitEvent *event = SubmitEvent::create(this, id, Json::getString(params, "job_id"), Json::getString(params, "nonce"), Json::getString(params, "result"), algorithm, Json::getString(params, "sig"), m_signatureData, Json::getString(params, "commitment"), m_viewTag, m_extraNonce, &submitError);
 
         if (!event->request.isValid() || event->request.actualDiff() < diff()) {
             event->setError(Error::LowDifficulty);
@@ -278,19 +279,22 @@ bool xmrig::Miner::parseRequest(int64_t id, const char *method, const rapidjson:
         }
 
         if (event->error() == Error::NoError && m_customDiff && event->request.actualDiff() < m_diff) {
+            const uint64_t actualDiff = event->request.actualDiff();
+            const int64_t requestId = event->request.id;
+            event->~SubmitEvent();
             success(id, "OK");
 
-            SubmitResult result = SubmitResult(1, m_customDiff, event->request.actualDiff(), event->request.id, 0);
+            SubmitResult result = SubmitResult(1, m_customDiff, actualDiff, requestId, 0);
             AcceptEvent::start(m_mapperId, this, result, false, true);
 
             return true;
         }
 
         if (!event->start()) {
-            replyWithError(id, event->message());
+            replyWithError(id, Error::toString(submitError));
         }
 
-        return event->error() != Error::InvalidNonce;
+        return submitError != Error::InvalidNonce;
     }
 
     if (strcmp(method, "keepalived") == 0) {

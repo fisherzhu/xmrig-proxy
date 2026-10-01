@@ -37,9 +37,9 @@ namespace xmrig {
 class SubmitEvent : public MinerEvent
 {
 public:
-    static inline SubmitEvent *create(Miner *miner, int64_t id, const char *jobId, const char *nonce, const char *result, const Algorithm &algorithm, const char* sig, const char* sig_data, const char* commitment, uint8_t view_tag, int64_t extra_nonce)
+    static inline SubmitEvent *create(Miner *miner, int64_t id, const char *jobId, const char *nonce, const char *result, const Algorithm &algorithm, const char* sig, const char* sig_data, const char* commitment, uint8_t view_tag, int64_t extra_nonce, Error::Code *errorOut)
     {
-        return new (m_buf) SubmitEvent(miner, id, jobId, nonce, result, algorithm, sig, sig_data, commitment, view_tag, extra_nonce);
+        return new (m_buf) SubmitEvent(miner, id, jobId, nonce, result, algorithm, sig, sig_data, commitment, view_tag, extra_nonce, errorOut);
     }
 
 
@@ -50,18 +50,20 @@ public:
     inline bool isRejected() const override { return m_error != Error::NoError; }
     inline const char *message() const      { return Error::toString(m_error); }
     inline Error::Code error() const        { return m_error; }
-    inline void setError(Error::Code error) { m_error  = error; }
+    inline void setError(Error::Code error) { m_error = error; *m_errorOut = error; }
 
 
 protected:
-    inline SubmitEvent(Miner *miner, int64_t id, const char *jobId, const char *nonce, const char *result, const Algorithm &algorithm, const char* sig, const char* sig_data, const char* commitment, uint8_t view_tag, int64_t extra_nonce)
+    inline SubmitEvent(Miner *miner, int64_t id, const char *jobId, const char *nonce, const char *result, const Algorithm &algorithm, const char* sig, const char* sig_data, const char* commitment, uint8_t view_tag, int64_t extra_nonce, Error::Code *errorOut)
         : MinerEvent(SubmitType, miner),
           request(id, jobId, nonce, result, algorithm, sig, sig_data, commitment, view_tag, extra_nonce),
-          m_error(Error::NoError)
+          m_error(Error::NoError),
+          m_errorOut(errorOut)
     {}
 
 private:
     Error::Code m_error;
+    Error::Code *m_errorOut;
 };
 
 
