@@ -7,6 +7,7 @@ option(WITH_DEBUG_LOG       "Enable debug log output" OFF)
 option(WITH_HTTP            "HTTP protocol support (client/server)" ON)
 option(WITH_TLS             "Enable OpenSSL support"  ON)
 option(WITH_ENV_VARS        "Enable environment variables support in config file" ON)
+option(WITH_T6_TESTS        "Build T6 owned-write regression tests" OFF)
 
 
 include(CheckIncludeFile)
@@ -197,6 +198,16 @@ include_directories(${UV_INCLUDE_DIR})
 
 add_executable(${CMAKE_PROJECT_NAME} ${HEADERS} ${SOURCES} ${SOURCES_OS} ${SOURCES_SYSLOG} ${HTTP_SOURCES} ${TLS_SOURCES})
 target_link_libraries(${CMAKE_PROJECT_NAME} ${OPENSSL_LIBRARIES} ${UV_LIBRARIES} ${EXTRA_LIBS} ${GOOGLE_BREAKPAD_LIBS})
+
+if (WITH_T6_TESTS)
+    enable_testing()
+    add_executable(t6-owned-stream-writer-test
+        tests/OwnedStreamWriter.test.cpp
+        src/base/net/tools/OwnedStreamWriter.cpp)
+    target_include_directories(t6-owned-stream-writer-test PRIVATE src ${UV_INCLUDE_DIRS})
+    target_link_libraries(t6-owned-stream-writer-test ${UV_LIBRARIES} ${EXTRA_LIBS})
+    add_test(NAME t6-owned-stream-writer COMMAND t6-owned-stream-writer-test)
+endif()
 
 if (CMAKE_CXX_COMPILER_ID MATCHES Clang AND CMAKE_BUILD_TYPE STREQUAL Release AND NOT CMAKE_GENERATOR STREQUAL Xcode)
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:${CMAKE_PROJECT_NAME}>")
