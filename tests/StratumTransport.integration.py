@@ -41,7 +41,7 @@ class JsonLines:
 
 
 class FakePool(threading.Thread):
-    def __init__(self):
+    def __init__(self, tls_context=None):
         super().__init__(daemon=True)
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -49,6 +49,7 @@ class FakePool(threading.Thread):
         self.listener.listen(4)
         self.listener.settimeout(0.2)
         self.port = self.listener.getsockname()[1]
+        self.tls_context = tls_context
         self.stop_event = threading.Event()
         self.submit_event = threading.Event()
         self.login_event = threading.Event()
@@ -64,6 +65,8 @@ class FakePool(threading.Thread):
                     conn, _ = self.listener.accept()
                 except socket.timeout:
                     continue
+                if self.tls_context:
+                    conn = self.tls_context.wrap_socket(conn, server_side=True)
                 with conn:
                     self.conn = conn
                     conn.settimeout(10)
@@ -135,11 +138,15 @@ def connect_miner(port, tls, process, log_path):
     raise RuntimeError("proxy did not listen on the isolated port")
 
 
-def run_case(binary, tls):
-    pool = FakePool()
+def run_case(binary, tls, upstream_tls, cert, key):
+    context = None
+    if upstream_tls:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(cert), str(key))
+    pool = FakePool(context)
     pool.start()
     port = reserve_port()
-    mode = "tls" if tls else "plain"
+    mode = "downstream %s / upstream %s" % ("tls" if tls else "plain", "tls" if upstream_tls else "plain")
     with tempfile.TemporaryDirectory(prefix="t6-transport-") as temp:
         root = Path(temp)
         config = {
@@ -151,7 +158,7 @@ def run_case(binary, tls):
             "http": {"enabled": False},
             "bind": [{"host": "127.0.0.1", "port": port, "tls": tls}],
             "tls": True if tls else False,
-            "pools": [{"url": "127.0.0.1:%d" % pool.port, "user": "fixture", "pass": "x", "tls": False, "enabled": True}],
+            "pools": [{"url": "127.0.0.1:%d" % pool.port, "user": "fixture", "pass": "x", "tls": upstream_tls, "enabled": True}],
         }
         config_path = root / "config.json"
         config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -201,11 +208,19 @@ def run_case(binary, tls):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=Path)
+    parser.add_argument("--openssl", default="openssl")
     args = parser.parse_args()
     if not args.binary.is_file():
         parser.error("proxy binary does not exist")
-    run_case(args.binary, False)
-    run_case(args.binary, True)
+    with tempfile.TemporaryDirectory(prefix="t6-cert-") as temp:
+        cert = Path(temp) / "cert.pem"
+        key = Path(temp) / "key.pem"
+        subprocess.run([args.openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                        "-subj", "/CN=localhost", "-keyout", str(key), "-out", str(cert), "-days", "1"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run_case(args.binary, False, False, cert, key)
+        run_case(args.binary, True, False, cert, key)
+        run_case(args.binary, True, True, cert, key)
 
 
 if __name__ == "__main__":

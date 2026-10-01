@@ -205,6 +205,10 @@ if (WITH_T6_TESTS)
     if (NOT PYTHON_EXECUTABLE)
         message(FATAL_ERROR "Python 3 is required for T6 integration tests")
     endif()
+    find_program(OPENSSL_EXECUTABLE NAMES openssl)
+    if (NOT OPENSSL_EXECUTABLE)
+        message(FATAL_ERROR "OpenSSL executable is required for T6 TLS integration tests")
+    endif()
     add_executable(t6-owned-stream-writer-test
         tests/OwnedStreamWriter.test.cpp
         src/base/net/tools/OwnedStreamWriter.cpp)
@@ -212,7 +216,8 @@ if (WITH_T6_TESTS)
     target_link_libraries(t6-owned-stream-writer-test ${UV_LIBRARIES} ${EXTRA_LIBS})
     add_test(NAME t6-owned-stream-writer COMMAND t6-owned-stream-writer-test)
     add_test(NAME t6-stratum-transport
-        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/StratumTransport.integration.py $<TARGET_FILE:${CMAKE_PROJECT_NAME}>)
+        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/StratumTransport.integration.py
+            $<TARGET_FILE:${CMAKE_PROJECT_NAME}> --openssl ${OPENSSL_EXECUTABLE})
     set_tests_properties(t6-stratum-transport PROPERTIES TIMEOUT 60)
 endif()
 
