@@ -22,16 +22,22 @@ JOB = {
 }
 
 
-def read_line(sock):
-    data = bytearray()
-    while not data.endswith(b"\n"):
-        chunk = sock.recv(65536)
-        if not chunk:
-            raise RuntimeError("socket closed before a complete JSON frame")
-        data.extend(chunk)
-        if len(data) > 131072:
-            raise RuntimeError("JSON frame exceeded test bound")
-    return json.loads(data.decode().split("\n", 1)[0])
+class JsonLines:
+    def __init__(self, sock):
+        self.sock = sock
+        self.pending = bytearray()
+
+    def read(self):
+        while b"\n" not in self.pending:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise RuntimeError("socket closed before a complete JSON frame")
+            self.pending.extend(chunk)
+            if len(self.pending) > 131072:
+                raise RuntimeError("JSON frame exceeded test bound")
+        line, _, remainder = self.pending.partition(b"\n")
+        self.pending = bytearray(remainder)
+        return json.loads(line.decode())
 
 
 class FakePool(threading.Thread):
@@ -45,6 +51,9 @@ class FakePool(threading.Thread):
         self.port = self.listener.getsockname()[1]
         self.stop_event = threading.Event()
         self.submit_event = threading.Event()
+        self.login_event = threading.Event()
+        self.send_lock = threading.Lock()
+        self.conn = None
         self.submits = []
         self.error = None
 
@@ -56,10 +65,12 @@ class FakePool(threading.Thread):
                 except socket.timeout:
                     continue
                 with conn:
+                    self.conn = conn
                     conn.settimeout(10)
+                    lines = JsonLines(conn)
                     while not self.stop_event.is_set():
                         try:
-                            request = read_line(conn)
+                            request = lines.read()
                         except (socket.timeout, RuntimeError):
                             break
                         method = request.get("method")
@@ -74,7 +85,11 @@ class FakePool(threading.Thread):
                         else:
                             raise RuntimeError("unexpected upstream method: %r" % method)
                         response = {"id": request["id"], "jsonrpc": "2.0", "error": None, "result": result}
-                        conn.sendall((json.dumps(response) + "\n").encode())
+                        with self.send_lock:
+                            conn.sendall((json.dumps(response) + "\n").encode())
+                        if method == "login":
+                            self.login_event.set()
+                    self.conn = None
         except Exception as exc:
             self.error = exc
         finally:
@@ -83,6 +98,15 @@ class FakePool(threading.Thread):
     def close(self):
         self.stop_event.set()
         self.join(timeout=2)
+
+    def send_jobs(self, count):
+        if not self.login_event.wait(5) or not self.conn:
+            raise RuntimeError("fake upstream login did not complete")
+        with self.send_lock:
+            for number in range(2, count + 2):
+                job = dict(JOB, job_id="t6-fixture-job-%d" % number)
+                message = {"jsonrpc": "2.0", "method": "job", "params": job}
+                self.conn.sendall((json.dumps(message) + "\n").encode())
 
 
 def reserve_port():
@@ -99,6 +123,7 @@ def connect_miner(port, tls, process, log_path):
         try:
             raw = socket.create_connection(("127.0.0.1", port), timeout=2)
             raw.settimeout(10)
+            raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
             if not tls:
                 return raw
             context = ssl.create_default_context()
@@ -136,23 +161,31 @@ def run_case(binary, tls):
                                        cwd=str(root), stdout=output, stderr=subprocess.STDOUT)
             try:
                 with connect_miner(port, tls, process, log_path) as miner:
+                    lines = JsonLines(miner)
                     login = {"id": 1, "method": "login", "params": {
                         "login": "t6-test-miner", "pass": "x", "agent": "xmrig/6.26.0", "algo": ["rx/0"]}}
                     miner.sendall((json.dumps(login) + "\n").encode())
-                    response = read_line(miner)
+                    response = lines.read()
                     assert response["error"] is None, response
                     assert response["result"]["status"] == "OK", response
                     job = response["result"]["job"]
                     assert job["job_id"] == JOB["job_id"], response
+                    pool.send_jobs(24)
+                    time.sleep(0.05)
+                    for number in range(2, 26):
+                        notification = lines.read()
+                        assert notification["method"] == "job", notification
+                        assert notification["params"]["job_id"] == "t6-fixture-job-%d" % number, notification
+                    job = notification["params"]
                     submit = {"id": 2, "method": "submit", "params": {
                         "id": response["result"]["id"], "job_id": job["job_id"],
                         "nonce": "00000001", "result": "00" * 24 + "0100000000000000", "algo": "rx/0"}}
                     miner.sendall((json.dumps(submit) + "\n").encode())
-                    answer = read_line(miner)
+                    answer = lines.read()
                     assert answer["error"] is None and answer["result"]["status"] == "OK", answer
                     assert pool.submit_event.wait(2), "fake upstream did not receive submit"
-                    assert len(pool.submits) == 1 and pool.submits[0]["params"]["job_id"] == JOB["job_id"]
-                    print("%s login/job/submit OK" % mode)
+                    assert len(pool.submits) == 1 and pool.submits[0]["params"]["job_id"] == job["job_id"]
+                    print("%s login/24 ordered jobs/submit OK" % mode)
             finally:
                 process.terminate()
                 try:

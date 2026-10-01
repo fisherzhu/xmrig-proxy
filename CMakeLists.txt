@@ -201,7 +201,10 @@ target_link_libraries(${CMAKE_PROJECT_NAME} ${OPENSSL_LIBRARIES} ${UV_LIBRARIES}
 
 if (WITH_T6_TESTS)
     enable_testing()
-    find_package(PythonInterp 3 REQUIRED)
+    find_program(PYTHON_EXECUTABLE NAMES python3)
+    if (NOT PYTHON_EXECUTABLE)
+        message(FATAL_ERROR "Python 3 is required for T6 integration tests")
+    endif()
     add_executable(t6-owned-stream-writer-test
         tests/OwnedStreamWriter.test.cpp
         src/base/net/tools/OwnedStreamWriter.cpp)
