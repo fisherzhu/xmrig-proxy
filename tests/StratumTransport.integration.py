@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 
@@ -146,6 +147,9 @@ def run_case(binary, tls, upstream_tls, proxy_mode, cert, key):
     pool = FakePool(context)
     pool.start()
     port = reserve_port()
+    http_port = reserve_port()
+    while http_port == port:
+        http_port = reserve_port()
     mode = "%s downstream %s / upstream %s" % (
         proxy_mode, "tls" if tls else "plain", "tls" if upstream_tls else "plain")
     with tempfile.TemporaryDirectory(prefix="t6-transport-") as temp:
@@ -156,7 +160,7 @@ def run_case(binary, tls, upstream_tls, proxy_mode, cert, key):
             "colors": False,
             "mode": proxy_mode,
             "donate-level": 0,
-            "http": {"enabled": False},
+            "http": {"enabled": True, "host": "127.0.0.1", "port": http_port, "restricted": True},
             "bind": [{"host": "127.0.0.1", "port": port, "tls": tls}],
             "tls": True if tls else False,
             "pools": [{"url": "127.0.0.1:%d" % pool.port, "user": "fixture", "pass": "x", "tls": upstream_tls, "enabled": True}],
@@ -194,6 +198,15 @@ def run_case(binary, tls, upstream_tls, proxy_mode, cert, key):
                     assert answer["error"] is None and answer["result"]["status"] == "OK", answer
                     assert pool.submit_event.wait(2), "fake upstream did not receive submit"
                     assert len(pool.submits) == 1 and pool.submits[0]["params"]["job_id"] == job["job_id"]
+                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    with opener.open("http://127.0.0.1:%d/1/summary" % http_port, timeout=5) as reply:
+                        summary = json.load(reply)
+                    writes = summary["results"]["owned_writes"]
+                    assert writes["accepted"] >= 26, writes
+                    assert writes["completed"] <= writes["accepted"], writes
+                    assert writes["peak_owned_bytes"] > 0, writes
+                    assert writes["over_limit"] == 0 and writes["immediate_error"] == 0, writes
+                    assert writes["callback_error"] == 0, writes
                     print("%s login/24 ordered jobs/submit OK" % mode)
             finally:
                 process.terminate()
