@@ -57,13 +57,17 @@ void testCopyAndLimits()
     OwnedStreamWriter writer(reinterpret_cast<uv_stream_t *>(&stream), limits, nullptr, fakeWrite);
 
     char frame[] = "abc";
+    const auto acceptedBefore = OwnedStreamWriter::acceptedWrites();
+    const auto limitBefore = OwnedStreamWriter::overLimitWrites();
     CHECK(writer.write(frame, 3, 100) == OwnedStreamWriter::Result::Accepted);
+    CHECK(OwnedStreamWriter::acceptedWrites() == acceptedBefore + 1);
     frame[0] = 'x';
     CHECK(std::string(calls.front().data, calls.front().size) == "abc");
     CHECK(writer.outstandingBytes() == 3);
     CHECK(writer.outstandingRequests() == 1);
     CHECK(OwnedStreamWriter::globalOutstandingBytes() == 3);
     CHECK(writer.write("de", 2, 101) == OwnedStreamWriter::Result::OverLimit);
+    CHECK(OwnedStreamWriter::overLimitWrites() == limitBefore + 1);
     CHECK(!writer.oldestExpired(129));
     CHECK(writer.oldestExpired(130));
 
@@ -95,6 +99,7 @@ void testFailureAndDetachedLifetime()
     uv_tcp_t stream{};
     const OwnedStreamWriter::Limits limits{8, 4, 8, 30};
     int failures = 0;
+    const auto cancelledBefore = OwnedStreamWriter::callbackCancelled();
     {
         OwnedStreamWriter writer(reinterpret_cast<uv_stream_t *>(&stream), limits,
             [&](int status) { CHECK(status == UV_ECANCELED); ++failures; }, fakeWrite);
@@ -106,6 +111,7 @@ void testFailureAndDetachedLifetime()
 
     complete(UV_ECANCELED);
     CHECK(failures == 1);
+    CHECK(OwnedStreamWriter::callbackCancelled() == cancelledBefore + 2);
     CHECK(OwnedStreamWriter::globalOutstandingBytes() == 0);
 }
 
@@ -117,4 +123,6 @@ int main()
     testGlobalLimitAndImmediateError();
     testFailureAndDetachedLifetime();
     CHECK(calls.empty());
+    CHECK(OwnedStreamWriter::acceptedWrites() == OwnedStreamWriter::completedWrites()
+        + OwnedStreamWriter::callbackErrors() + OwnedStreamWriter::callbackCancelled());
 }

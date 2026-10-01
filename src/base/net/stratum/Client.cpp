@@ -317,6 +317,7 @@ void xmrig::Client::tick(uint64_t now)
 {
     if (m_state == ConnectedState) {
         if (m_writer && m_writer->oldestExpired(now)) {
+            OwnedStreamWriter::noteAgeClose();
             LOG_ERR("%s upstream write queue exceeded age limit; pending request delivery unknown", tag());
             close();
             return;

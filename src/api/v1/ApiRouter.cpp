@@ -27,6 +27,7 @@
 #include "base/api/interfaces/IApiRequest.h"
 #include "base/kernel/Platform.h"
 #include "base/tools/Buffer.h"
+#include "base/net/tools/OwnedStreamWriter.h"
 #include "core/config/Config.h"
 #include "core/Controller.h"
 #include "proxy/Counters.h"
@@ -206,6 +207,19 @@ void xmrig::ApiRouter::getResults(rapidjson::Value &reply, rapidjson::Document &
     results.AddMember("latency",       stats.avgLatency(), allocator);
     results.AddMember("hashes_total",  stats.hashes, allocator);
     results.AddMember("hashes_donate", stats.donateHashes, allocator);
+
+    rapidjson::Value writes(rapidjson::kObjectType);
+    writes.AddMember("owned_pending_bytes", static_cast<uint64_t>(OwnedStreamWriter::globalOutstandingBytes()), allocator);
+    writes.AddMember("peak_owned_bytes", static_cast<uint64_t>(OwnedStreamWriter::peakOutstandingBytes()), allocator);
+    writes.AddMember("accepted", OwnedStreamWriter::acceptedWrites(), allocator);
+    writes.AddMember("completed", OwnedStreamWriter::completedWrites(), allocator);
+    writes.AddMember("over_limit", OwnedStreamWriter::overLimitWrites(), allocator);
+    writes.AddMember("closed", OwnedStreamWriter::closedWrites(), allocator);
+    writes.AddMember("immediate_error", OwnedStreamWriter::immediateErrors(), allocator);
+    writes.AddMember("callback_error", OwnedStreamWriter::callbackErrors(), allocator);
+    writes.AddMember("callback_cancelled", OwnedStreamWriter::callbackCancelled(), allocator);
+    writes.AddMember("age_close", OwnedStreamWriter::ageCloses(), allocator);
+    results.AddMember("owned_writes", writes, allocator);
 
     rapidjson::Value best(rapidjson::kArrayType);
     for (uint64_t i : stats.topDiff) {

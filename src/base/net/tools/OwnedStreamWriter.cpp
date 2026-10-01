@@ -11,6 +11,15 @@ namespace xmrig {
 
 namespace {
 std::atomic<size_t> g_ownedBytes{0};
+std::atomic<size_t> g_peakOwnedBytes{0};
+std::atomic<uint64_t> g_acceptedWrites{0};
+std::atomic<uint64_t> g_completedWrites{0};
+std::atomic<uint64_t> g_overLimitWrites{0};
+std::atomic<uint64_t> g_closedWrites{0};
+std::atomic<uint64_t> g_immediateErrors{0};
+std::atomic<uint64_t> g_callbackErrors{0};
+std::atomic<uint64_t> g_callbackCancelled{0};
+std::atomic<uint64_t> g_ageCloses{0};
 }
 
 struct OwnedStreamWriter::State {
@@ -51,6 +60,16 @@ void OwnedStreamWriter::onWrite(uv_write_t *request, int status)
     const auto state = write->state;
     release(write);
 
+    if (status == UV_ECANCELED) {
+        g_callbackCancelled.fetch_add(1);
+    }
+    else if (status < 0) {
+        g_callbackErrors.fetch_add(1);
+    }
+    else {
+        g_completedWrites.fetch_add(1);
+    }
+
     if (status < 0 && state->active && state->onFailure) {
         state->onFailure(status);
     }
@@ -71,10 +90,12 @@ OwnedStreamWriter::Result OwnedStreamWriter::write(const char *data, size_t size
     const auto state = m_state;
     state->lastError = 0;
     if (!state->active || !state->stream) {
+        g_closedWrites.fetch_add(1);
         return Result::Closed;
     }
 
     if (!data || size == 0) {
+        g_immediateErrors.fetch_add(1);
         return Result::Error;
     }
 
@@ -83,6 +104,7 @@ OwnedStreamWriter::Result OwnedStreamWriter::write(const char *data, size_t size
         || state->pending.size() >= state->limits.maxRequests
         || size > state->limits.maxBytes - std::min(state->ownedBytes, state->limits.maxBytes)
         || size > state->limits.maxGlobalBytes - std::min(global, state->limits.maxGlobalBytes)) {
+        g_overLimitWrites.fetch_add(1);
         return Result::OverLimit;
     }
 
@@ -96,16 +118,20 @@ OwnedStreamWriter::Result OwnedStreamWriter::write(const char *data, size_t size
     state->pending.push_back(pending);
     pending->position = --state->pending.end();
     state->ownedBytes += size;
-    g_ownedBytes.fetch_add(size);
+    const size_t total = g_ownedBytes.fetch_add(size) + size;
+    size_t peak = g_peakOwnedBytes.load();
+    while (total > peak && !g_peakOwnedBytes.compare_exchange_weak(peak, total)) {}
     pendingOwner.release();
 
     const int rc = state->writer(&pending->request, state->stream, &pending->buffer, 1, onWrite);
     if (rc < 0) {
         state->lastError = rc;
+        g_immediateErrors.fetch_add(1);
         release(pending);
         return Result::Error;
     }
 
+    g_acceptedWrites.fetch_add(1);
     return Result::Accepted;
 }
 
@@ -157,5 +183,16 @@ size_t OwnedStreamWriter::globalOutstandingBytes()
 {
     return g_ownedBytes.load();
 }
+
+size_t OwnedStreamWriter::peakOutstandingBytes() { return g_peakOwnedBytes.load(); }
+uint64_t OwnedStreamWriter::acceptedWrites() { return g_acceptedWrites.load(); }
+uint64_t OwnedStreamWriter::completedWrites() { return g_completedWrites.load(); }
+uint64_t OwnedStreamWriter::overLimitWrites() { return g_overLimitWrites.load(); }
+uint64_t OwnedStreamWriter::closedWrites() { return g_closedWrites.load(); }
+uint64_t OwnedStreamWriter::immediateErrors() { return g_immediateErrors.load(); }
+uint64_t OwnedStreamWriter::callbackErrors() { return g_callbackErrors.load(); }
+uint64_t OwnedStreamWriter::callbackCancelled() { return g_callbackCancelled.load(); }
+uint64_t OwnedStreamWriter::ageCloses() { return g_ageCloses.load(); }
+void OwnedStreamWriter::noteAgeClose() { g_ageCloses.fetch_add(1); }
 
 } // namespace xmrig

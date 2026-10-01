@@ -39,6 +39,16 @@ public:
     int lastError() const;
     static const char *resultName(Result result);
     static size_t globalOutstandingBytes();
+    static size_t peakOutstandingBytes();
+    static uint64_t acceptedWrites();
+    static uint64_t completedWrites();
+    static uint64_t overLimitWrites();
+    static uint64_t closedWrites();
+    static uint64_t immediateErrors();
+    static uint64_t callbackErrors();
+    static uint64_t callbackCancelled();
+    static uint64_t ageCloses();
+    static void noteAgeClose();
 
 private:
     struct State;
