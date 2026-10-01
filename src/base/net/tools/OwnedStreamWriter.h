@@ -36,6 +36,8 @@ public:
 
     size_t outstandingBytes() const;
     size_t outstandingRequests() const;
+    int lastError() const;
+    static const char *resultName(Result result);
     static size_t globalOutstandingBytes();
 
 private:

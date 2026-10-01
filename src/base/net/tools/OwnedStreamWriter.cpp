@@ -23,6 +23,7 @@ struct OwnedStreamWriter::State {
     WriteFunction writer;
     std::list<PendingWrite *> pending;
     size_t ownedBytes = 0;
+    int lastError = 0;
     bool active = true;
 };
 
@@ -68,6 +69,7 @@ OwnedStreamWriter::~OwnedStreamWriter()
 OwnedStreamWriter::Result OwnedStreamWriter::write(const char *data, size_t size, uint64_t now)
 {
     const auto state = m_state;
+    state->lastError = 0;
     if (!state->active || !state->stream) {
         return Result::Closed;
     }
@@ -84,7 +86,8 @@ OwnedStreamWriter::Result OwnedStreamWriter::write(const char *data, size_t size
         return Result::OverLimit;
     }
 
-    auto *pending = new PendingWrite;
+    std::unique_ptr<PendingWrite> pendingOwner(new PendingWrite);
+    auto *pending = pendingOwner.get();
     pending->bytes.assign(data, size);
     pending->state = state;
     pending->createdAt = now;
@@ -94,9 +97,11 @@ OwnedStreamWriter::Result OwnedStreamWriter::write(const char *data, size_t size
     pending->position = --state->pending.end();
     state->ownedBytes += size;
     g_ownedBytes.fetch_add(size);
+    pendingOwner.release();
 
     const int rc = state->writer(&pending->request, state->stream, &pending->buffer, 1, onWrite);
     if (rc < 0) {
+        state->lastError = rc;
         release(pending);
         return Result::Error;
     }
@@ -129,6 +134,23 @@ size_t OwnedStreamWriter::outstandingBytes() const
 size_t OwnedStreamWriter::outstandingRequests() const
 {
     return m_state->pending.size();
+}
+
+int OwnedStreamWriter::lastError() const
+{
+    return m_state->lastError;
+}
+
+const char *OwnedStreamWriter::resultName(Result result)
+{
+    switch (result) {
+    case Result::Accepted: return "accepted";
+    case Result::Closed: return "closed";
+    case Result::OverLimit: return "over_limit";
+    case Result::Error: return "write_error";
+    }
+
+    return "unknown";
 }
 
 size_t OwnedStreamWriter::globalOutstandingBytes()

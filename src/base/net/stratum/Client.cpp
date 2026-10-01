@@ -47,6 +47,7 @@
 #include "base/net/dns/DnsRecords.h"
 #include "base/net/stratum/Socks5.h"
 #include "base/net/tools/NetBuffer.h"
+#include "base/net/tools/OwnedStreamWriter.h"
 #include "base/tools/Chrono.h"
 #include "base/tools/cryptonote/BlobReader.h"
 #include "base/tools/Cvt.h"
@@ -61,6 +62,7 @@
 namespace xmrig {
 
 Storage<Client> Client::m_storage;
+static const OwnedStreamWriter::Limits kUpstreamWriteLimits{1024 * 1024, 512, 32 * 1024 * 1024, 30 * 1000};
 
 } /* namespace xmrig */
 
@@ -90,6 +92,7 @@ xmrig::Client::Client(int id, const char *agent, IClientListener *listener) :
 
 xmrig::Client::~Client()
 {
+    m_writer.reset();
     delete m_socket;
 }
 
@@ -140,11 +143,17 @@ const char *xmrig::Client::tlsVersion() const
 
 int64_t xmrig::Client::send(const rapidjson::Value &obj, Callback callback)
 {
-    assert(obj["id"] == sequence());
+    const int64_t id = sequence();
+    assert(obj["id"] == id);
 
-    m_callbacks.insert({ sequence(), std::move(callback) });
+    m_callbacks.insert({ id, std::move(callback) });
 
-    return send(obj);
+    const int64_t sent = send(obj);
+    if (sent < 0) {
+        m_callbacks.erase(id);
+    }
+
+    return sent;
 }
 
 
@@ -254,7 +263,13 @@ int64_t xmrig::Client::submit(const JobResult &result)
     m_results[m_sequence] = SubmitResult(m_sequence, result.diff, result.actualDiff(), 0, result.backend);
 #   endif
 
-    return send(doc);
+    const int64_t sent = send(doc);
+    if (sent < 0) {
+        m_results.erase(m_sequence);
+        LOG_ERR("%s upstream submit write was not accepted; delivery unknown", tag());
+    }
+
+    return sent;
 }
 
 
@@ -301,6 +316,12 @@ void xmrig::Client::deleteLater()
 void xmrig::Client::tick(uint64_t now)
 {
     if (m_state == ConnectedState) {
+        if (m_writer && m_writer->oldestExpired(now)) {
+            LOG_ERR("%s upstream write queue exceeded age limit; pending request delivery unknown", tag());
+            close();
+            return;
+        }
+
         if (m_expire && now > m_expire) {
             LOG_DEBUG_ERR("[%s] timeout", url());
             close();
@@ -357,6 +378,9 @@ bool xmrig::Client::close()
     }
 
     setState(ClosingState);
+    if (m_writer) {
+        m_writer->detach();
+    }
 
     if (uv_is_closing(reinterpret_cast<uv_handle_t*>(m_socket)) == 0) {
         if (Platform::hasKeepalive()) {
@@ -475,7 +499,9 @@ bool xmrig::Client::send(BIO *bio)
         LOG_DEBUG_ERR("[%s] send failed, invalid state: %d", url(), m_state);
     }
 
-    (void) BIO_reset(bio);
+    if (result) {
+        (void) BIO_reset(bio);
+    }
 
     return result;
 #   else
@@ -512,13 +538,15 @@ bool xmrig::Client::verifyAlgorithm(const Algorithm &algorithm, const char *algo
 
 bool xmrig::Client::write(const uv_buf_t &buf)
 {
-    const int rc = uv_try_write(stream(), &buf, 1);
-    if (static_cast<size_t>(rc) == buf.len) {
+    const auto result = m_writer ? m_writer->write(buf.base, buf.len, Chrono::steadyMSecs()) : OwnedStreamWriter::Result::Closed;
+    if (result == OwnedStreamWriter::Result::Accepted) {
         return true;
     }
 
     if (!isQuiet()) {
-        LOG_ERR("%s " RED("write error: ") RED_BOLD("\"%s\""), tag(), uv_strerror(rc));
+        LOG_ERR("%s upstream write rejected: %s (%s)", tag(),
+                OwnedStreamWriter::resultName(result),
+                m_writer && result == OwnedStreamWriter::Result::Error ? uv_strerror(m_writer->lastError()) : "capacity/state");
     }
 
     close();
@@ -550,6 +578,8 @@ int64_t xmrig::Client::send(size_t size)
 #   ifdef XMRIG_FEATURE_TLS
     if (isTLS()) {
         if (!m_tls->send(m_sendBuf.data(), size)) {
+            LOG_ERR("%s upstream TLS application write failed", tag());
+            close();
             return -1;
         }
     }
@@ -585,6 +615,12 @@ void xmrig::Client::connect(const sockaddr *addr)
     m_socket->data = m_storage.ptr(m_key);
 
     uv_tcp_init(uv_default_loop(), m_socket);
+    m_writer.reset(new OwnedStreamWriter(stream(), kUpstreamWriteLimits,
+        [this](int status) {
+            LOG_ERR("%s upstream write callback failed: %s; %zu submit result(s) pending, delivery unknown",
+                    tag(), uv_strerror(status), m_results.size());
+            close();
+        }));
     uv_tcp_nodelay(m_socket, 1);
 
     if (Platform::hasKeepalive()) {
@@ -659,6 +695,12 @@ void xmrig::Client::login()
 
 void xmrig::Client::onClose()
 {
+    if (!m_results.empty()) {
+        LOG_ERR("%s upstream disconnected with %zu unresolved submit result(s); delivery unknown", tag(), m_results.size());
+        m_results.clear();
+    }
+
+    m_writer.reset();
     delete m_socket;
 
     m_socket = nullptr;

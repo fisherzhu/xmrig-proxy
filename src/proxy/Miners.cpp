@@ -27,6 +27,7 @@
 
 #include "base/tools/Chrono.h"
 #include "base/tools/Handle.h"
+#include "base/io/log/Log.h"
 #include "proxy/events/CloseEvent.h"
 #include "proxy/events/ConnectionEvent.h"
 #include "proxy/Miner.h"
@@ -104,7 +105,11 @@ void xmrig::Miners::tick()
     std::vector<Miner*> expired;
 
     for (auto const &kv : m_miners) {
-        if (now > kv.second->expire()) {
+        if (kv.second->writeExpired(now)) {
+            LOG_ERR("[%s] downstream write queue exceeded age limit", kv.second->ip());
+            expired.push_back(kv.second);
+        }
+        else if (now > kv.second->expire()) {
             expired.push_back(kv.second);
         }
     }

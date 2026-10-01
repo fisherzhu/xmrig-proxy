@@ -23,6 +23,7 @@
 
 #include <bitset>
 #include <map>
+#include <memory>
 #include <uv.h>
 #include <vector>
 
@@ -47,6 +48,7 @@ namespace xmrig {
 class DnsRequest;
 class IClientListener;
 class JobResult;
+class OwnedStreamWriter;
 
 
 class Client : public BaseClient, public IDnsListener, public ILineListener
@@ -140,6 +142,7 @@ private:
     uint64_t m_keepAlive        = 0;
     uintptr_t m_key             = 0;
     uv_tcp_t *m_socket          = nullptr;
+    std::unique_ptr<OwnedStreamWriter> m_writer;
 
     static Storage<Client> m_storage;
 };

@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <bitset>
+#include <memory>
 #include <uv.h>
 
 #include "3rdparty/rapidjson/fwd.h"
@@ -44,6 +45,7 @@ namespace xmrig {
 
 
 class Job;
+class OwnedStreamWriter;
 class TlsContext;
 
 
@@ -74,6 +76,7 @@ public:
     void replyWithError(int64_t id, const char *message);
     void setJob(Job &job, int64_t extra_nonce = -1);
     void success(int64_t id, const char *status);
+    bool writeExpired(uint64_t now) const;
 
     inline bool hasExtension(Extension ext) const noexcept        { return m_extensions.test(ext); }
     inline const char *ip() const                                 { return m_ip; }
@@ -115,9 +118,9 @@ private:
     void heartbeat();
     void parse(char *line, size_t len);
     void read(ssize_t nread, const uv_buf_t *buf);
-    void send(const rapidjson::Document &doc);
-    void send(int size);
-    void sendJob(const char *blob, const char *jobId, const char *target, const char *algo, uint64_t height, const String &seedHash, const String &signatureKey);
+    bool send(const rapidjson::Document &doc);
+    bool send(int size);
+    bool sendJob(const char *blob, const char *jobId, const char *target, const char *algo, uint64_t height, const String &seedHash, const String &signatureKey);
     void setState(State state);
     void shutdown(bool had_error);
     void startTLS(const char *data);
@@ -158,6 +161,7 @@ private:
     int64_t m_extraNonce    = -1;
     uintptr_t m_key;
     uv_tcp_t *m_socket;
+    std::unique_ptr<OwnedStreamWriter> m_writer;
 
     static char m_sendBuf[16384];
     static Storage<Miner> m_storage;

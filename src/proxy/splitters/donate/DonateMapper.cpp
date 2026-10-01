@@ -68,7 +68,9 @@ void xmrig::DonateMapper::submit(SubmitEvent *event)
     JobResult req = event->request;
     req.diff = m_diff;
 
-    m_client->submit(req);
+    if (m_client->submit(req) < 0) {
+        event->setError(Error::BadGateway);
+    }
 }
 
 

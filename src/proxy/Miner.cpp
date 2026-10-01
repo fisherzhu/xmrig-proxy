@@ -31,6 +31,7 @@
 #include "base/io/log/Log.h"
 #include "base/net/stratum/Job.h"
 #include "base/net/tools/NetBuffer.h"
+#include "base/net/tools/OwnedStreamWriter.h"
 #include "base/tools/Cvt.h"
 #include "base/tools/Chrono.h"
 #include "net/JobResult.h"
@@ -56,6 +57,7 @@
 
 namespace xmrig {
     static int64_t nextId = 0;
+    static const OwnedStreamWriter::Limits kDownstreamWriteLimits{64 * 1024, 64, 32 * 1024 * 1024, 30 * 1000};
     char Miner::m_sendBuf[16384] = { 0 };
     Storage<Miner> Miner::m_storage;
 } // namespace xmrig
@@ -76,6 +78,11 @@ xmrig::Miner::Miner(const TlsContext *ctx, uint16_t port, bool strictTls) :
     m_socket = new uv_tcp_t;
     m_socket->data = m_storage.ptr(m_key);
     uv_tcp_init(uv_default_loop(), m_socket);
+    m_writer.reset(new OwnedStreamWriter(reinterpret_cast<uv_stream_t *>(m_socket), kDownstreamWriteLimits,
+        [this](int status) {
+            LOG_ERR("[%s] downstream write callback failed: %s", m_ip, uv_strerror(status));
+            shutdown(true);
+        }));
 
     Counters::connections++;
 }
@@ -83,6 +90,7 @@ xmrig::Miner::Miner(const TlsContext *ctx, uint16_t port, bool strictTls) :
 
 xmrig::Miner::~Miner()
 {
+    m_writer.reset();
     if (uv_is_closing(reinterpret_cast<uv_handle_t *>(m_socket))) {
         delete m_socket;
     }
@@ -125,10 +133,11 @@ bool xmrig::Miner::accept(uv_stream_t *server)
 
 void xmrig::Miner::forwardJob(const Job &job, const char *algo)
 {
-    m_diff = job.diff();
     setFixedByte(job.fixedByte());
 
-    sendJob(job.rawBlob(), job.id().data(), job.rawTarget(), algo ? algo : job.algorithm().name(), job.height(), job.rawSeedHash(), job.rawSigKey());
+    if (sendJob(job.rawBlob(), job.id().data(), job.rawTarget(), algo ? algo : job.algorithm().name(), job.height(), job.rawSeedHash(), job.rawSigKey())) {
+        m_diff = job.diff();
+    }
 }
 
 
@@ -147,10 +156,9 @@ void xmrig::Miner::setJob(Job &job, int64_t extra_nonce)
         memcpy(job.rawBlob() + (job.nonceOffset() + 3) * 2, m_sendBuf, 2);
     }
 
-    m_diff = job.diff();
     bool customDiff = false;
 
-    if (m_customDiff && m_customDiff < m_diff) {
+    if (m_customDiff && m_customDiff < job.diff()) {
         const uint64_t t = 0xFFFFFFFFFFFFFFFFULL / m_customDiff;
         Cvt::toHex(m_sendBuf, 9, reinterpret_cast<const uint8_t *>(&t) + 4, 4);
         customDiff = true;
@@ -180,7 +188,9 @@ void xmrig::Miner::setJob(Job &job, int64_t extra_nonce)
         blob = tmp_blob;
     }
 
-    sendJob(blob, job.id().data(), customDiff ? m_sendBuf : job.rawTarget(), job.algorithm().name(), job.height(), job.rawSeedHash(), m_signatureData);
+    if (sendJob(blob, job.id().data(), customDiff ? m_sendBuf : job.rawTarget(), job.algorithm().name(), job.height(), job.rawSeedHash(), m_signatureData)) {
+        m_diff = job.diff();
+    }
 }
 
 
@@ -193,6 +203,12 @@ void xmrig::Miner::success(int64_t id, const char *status)
 bool xmrig::Miner::isWritable() const
 {
     return m_state != ClosingState && uv_is_writable(reinterpret_cast<const uv_stream_t*>(m_socket)) == 1;
+}
+
+
+bool xmrig::Miner::writeExpired(uint64_t now) const
+{
+    return m_state != ClosingState && m_writer && m_writer->oldestExpired(now);
 }
 
 
@@ -304,15 +320,17 @@ bool xmrig::Miner::send(BIO *bio)
         return false;
     }
 
-    const int rc = uv_try_write(reinterpret_cast<uv_stream_t*>(m_socket), &buf, 1);
-    (void) BIO_reset(bio);
-
-    if (rc < 0) {
+    const auto result = m_writer->write(buf.base, buf.len, Chrono::steadyMSecs());
+    if (result != OwnedStreamWriter::Result::Accepted) {
+        LOG_ERR("[%s] downstream TLS write rejected: %s (%s)", m_ip,
+                OwnedStreamWriter::resultName(result),
+                result == OwnedStreamWriter::Result::Error ? uv_strerror(m_writer->lastError()) : "capacity/state");
         shutdown(true);
 
         return false;
     }
 
+    (void) BIO_reset(bio);
     m_tx += buf.len;
 
     return true;
@@ -390,7 +408,7 @@ void xmrig::Miner::read(ssize_t nread, const uv_buf_t *buf)
 }
 
 
-void xmrig::Miner::send(const rapidjson::Document &doc)
+bool xmrig::Miner::send(const rapidjson::Document &doc)
 {
     using namespace rapidjson;
 
@@ -403,7 +421,7 @@ void xmrig::Miner::send(const rapidjson::Document &doc)
         LOG_ERR("[%s] send failed: \"send buffer overflow: %zu > %zu\"", m_ip, size, (sizeof(m_sendBuf) - 2));
         shutdown(true);
 
-        return;
+        return false;
     }
 
     memcpy(m_sendBuf, buffer.GetString(), size);
@@ -414,35 +432,45 @@ void xmrig::Miner::send(const rapidjson::Document &doc)
 }
 
 
-void xmrig::Miner::send(int size)
+bool xmrig::Miner::send(int size)
 {
     LOG_DEBUG("[%s] send (%d bytes): \"%s\"", m_ip, size, m_sendBuf);
 
-    if (size <= 0 || !isWritable()) {
-        return;
+    if (size <= 0 || static_cast<size_t>(size) >= sizeof(m_sendBuf) || !isWritable()) {
+        return false;
     }
 
-    int rc = -1;
+    bool accepted = false;
 #   ifdef XMRIG_FEATURE_TLS
     if (isTLS()) {
-        rc = m_tls->send(m_sendBuf, size) ? 0 : -1;
+        accepted = m_tls->send(m_sendBuf, size);
+        if (!accepted) {
+            LOG_ERR("[%s] downstream TLS application write failed", m_ip);
+        }
     }
     else
 #   endif
     {
-        uv_buf_t buf = uv_buf_init(m_sendBuf, (unsigned int) size);
-        rc = uv_try_write(reinterpret_cast<uv_stream_t*>(m_socket), &buf, 1);
+        const auto result = m_writer->write(m_sendBuf, static_cast<size_t>(size), Chrono::steadyMSecs());
+        accepted = result == OwnedStreamWriter::Result::Accepted;
+        if (!accepted) {
+            LOG_ERR("[%s] downstream write rejected: %s (%s)", m_ip,
+                    OwnedStreamWriter::resultName(result),
+                    result == OwnedStreamWriter::Result::Error ? uv_strerror(m_writer->lastError()) : "capacity/state");
+        }
     }
 
-    if (rc < 0) {
-        return shutdown(true);
+    if (!accepted) {
+        shutdown(true);
+        return false;
     }
 
     m_tx += size;
+    return true;
 }
 
 
-void xmrig::Miner::sendJob(const char *blob, const char *jobId, const char *target, const char *algo, uint64_t height, const String &seedHash, const String &signatureKey)
+bool xmrig::Miner::sendJob(const char *blob, const char *jobId, const char *target, const char *algo, uint64_t height, const String &seedHash, const String &signatureKey)
 {
     using namespace rapidjson;
 
@@ -471,9 +499,8 @@ void xmrig::Miner::sendJob(const char *blob, const char *jobId, const char *targ
 
     doc.AddMember("jsonrpc", "2.0", allocator);
 
-    if (m_state == WaitReadyState) {
-        setState(ReadyState);
-
+    const bool loginReply = m_state == WaitReadyState;
+    if (loginReply) {
         doc.AddMember("id",    m_loginId, allocator);
         doc.AddMember("error", kNullType, allocator);
 
@@ -511,7 +538,15 @@ void xmrig::Miner::sendJob(const char *blob, const char *jobId, const char *targ
         doc.AddMember("params", params, allocator);
     }
 
-    send(doc);
+    if (!send(doc)) {
+        return false;
+    }
+
+    if (loginReply) {
+        setState(ReadyState);
+    }
+
+    return true;
 }
 
 
@@ -541,6 +576,7 @@ void xmrig::Miner::shutdown(bool had_error)
     }
 
     setState(ClosingState);
+    m_writer->detach();
     uv_read_stop(reinterpret_cast<uv_stream_t*>(m_socket));
 
     // uv_shutdown gets stuck when the connection was not terminated gracefully

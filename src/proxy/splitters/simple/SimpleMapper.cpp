@@ -126,8 +126,8 @@ void xmrig::SimpleMapper::submit(SubmitEvent *event)
 
     IStrategy *strategy = m_donate && m_donate->isActive() ? m_donate : m_strategy;
 
-    if (strategy) {
-        strategy->submit(req);
+    if (!strategy || strategy->submit(req) < 0) {
+        event->setError(Error::BadGateway);
     }
 }
 

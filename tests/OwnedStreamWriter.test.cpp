@@ -1,12 +1,23 @@
 #include "base/net/tools/OwnedStreamWriter.h"
 
-#include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
 using xmrig::OwnedStreamWriter;
 
 namespace {
+
+void check(bool ok, const char *expression, int line)
+{
+    if (!ok) {
+        std::fprintf(stderr, "line %d: %s failed\n", line, expression);
+        std::abort();
+    }
+}
+
+#define CHECK(expression) check((expression), #expression, __LINE__)
 
 struct Call {
     uv_write_t *request;
@@ -20,7 +31,7 @@ int nextError = 0;
 
 int fakeWrite(uv_write_t *request, uv_stream_t *, const uv_buf_t buffers[], unsigned int count, uv_write_cb callback)
 {
-    assert(count == 1);
+    CHECK(count == 1);
     if (nextError) {
         const int error = nextError;
         nextError = 0;
@@ -33,7 +44,7 @@ int fakeWrite(uv_write_t *request, uv_stream_t *, const uv_buf_t buffers[], unsi
 
 void complete(int status)
 {
-    assert(!calls.empty());
+    CHECK(!calls.empty());
     const Call call = calls.front();
     calls.erase(calls.begin());
     call.callback(call.request, status);
@@ -46,19 +57,19 @@ void testCopyAndLimits()
     OwnedStreamWriter writer(reinterpret_cast<uv_stream_t *>(&stream), limits, nullptr, fakeWrite);
 
     char frame[] = "abc";
-    assert(writer.write(frame, 3, 100) == OwnedStreamWriter::Result::Accepted);
+    CHECK(writer.write(frame, 3, 100) == OwnedStreamWriter::Result::Accepted);
     frame[0] = 'x';
-    assert(std::string(calls.front().data, calls.front().size) == "abc");
-    assert(writer.outstandingBytes() == 3);
-    assert(writer.outstandingRequests() == 1);
-    assert(OwnedStreamWriter::globalOutstandingBytes() == 3);
-    assert(writer.write("de", 2, 101) == OwnedStreamWriter::Result::OverLimit);
-    assert(!writer.oldestExpired(129));
-    assert(writer.oldestExpired(130));
+    CHECK(std::string(calls.front().data, calls.front().size) == "abc");
+    CHECK(writer.outstandingBytes() == 3);
+    CHECK(writer.outstandingRequests() == 1);
+    CHECK(OwnedStreamWriter::globalOutstandingBytes() == 3);
+    CHECK(writer.write("de", 2, 101) == OwnedStreamWriter::Result::OverLimit);
+    CHECK(!writer.oldestExpired(129));
+    CHECK(writer.oldestExpired(130));
 
     complete(0);
-    assert(writer.outstandingBytes() == 0);
-    assert(OwnedStreamWriter::globalOutstandingBytes() == 0);
+    CHECK(writer.outstandingBytes() == 0);
+    CHECK(OwnedStreamWriter::globalOutstandingBytes() == 0);
 }
 
 void testGlobalLimitAndImmediateError()
@@ -67,15 +78,16 @@ void testGlobalLimitAndImmediateError()
     const OwnedStreamWriter::Limits limits{8, 4, 5, 30};
     OwnedStreamWriter first(reinterpret_cast<uv_stream_t *>(&stream), limits, nullptr, fakeWrite);
     OwnedStreamWriter second(reinterpret_cast<uv_stream_t *>(&stream), limits, nullptr, fakeWrite);
-    assert(first.write("abcd", 4, 1) == OwnedStreamWriter::Result::Accepted);
-    assert(second.write("ef", 2, 1) == OwnedStreamWriter::Result::OverLimit);
+    CHECK(first.write("abcd", 4, 1) == OwnedStreamWriter::Result::Accepted);
+    CHECK(second.write("ef", 2, 1) == OwnedStreamWriter::Result::OverLimit);
     complete(0);
 
     nextError = UV_EPIPE;
-    assert(second.write("ef", 2, 2) == OwnedStreamWriter::Result::Error);
-    assert(second.outstandingBytes() == 0);
-    assert(OwnedStreamWriter::globalOutstandingBytes() == 0);
-    assert(calls.empty());
+    CHECK(second.write("ef", 2, 2) == OwnedStreamWriter::Result::Error);
+    CHECK(second.lastError() == UV_EPIPE);
+    CHECK(second.outstandingBytes() == 0);
+    CHECK(OwnedStreamWriter::globalOutstandingBytes() == 0);
+    CHECK(calls.empty());
 }
 
 void testFailureAndDetachedLifetime()
@@ -85,16 +97,16 @@ void testFailureAndDetachedLifetime()
     int failures = 0;
     {
         OwnedStreamWriter writer(reinterpret_cast<uv_stream_t *>(&stream), limits,
-            [&](int status) { assert(status == UV_ECANCELED); ++failures; }, fakeWrite);
-        assert(writer.write("a", 1, 1) == OwnedStreamWriter::Result::Accepted);
+            [&](int status) { CHECK(status == UV_ECANCELED); ++failures; }, fakeWrite);
+        CHECK(writer.write("a", 1, 1) == OwnedStreamWriter::Result::Accepted);
         complete(UV_ECANCELED);
-        assert(failures == 1);
-        assert(writer.write("b", 1, 2) == OwnedStreamWriter::Result::Accepted);
+        CHECK(failures == 1);
+        CHECK(writer.write("b", 1, 2) == OwnedStreamWriter::Result::Accepted);
     }
 
     complete(UV_ECANCELED);
-    assert(failures == 1);
-    assert(OwnedStreamWriter::globalOutstandingBytes() == 0);
+    CHECK(failures == 1);
+    CHECK(OwnedStreamWriter::globalOutstandingBytes() == 0);
 }
 
 } // namespace
@@ -104,5 +116,5 @@ int main()
     testCopyAndLimits();
     testGlobalLimitAndImmediateError();
     testFailureAndDetachedLifetime();
-    assert(calls.empty());
+    CHECK(calls.empty());
 }

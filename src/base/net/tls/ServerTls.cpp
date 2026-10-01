@@ -62,7 +62,10 @@ bool xmrig::ServerTls::isTLS(const char *data, size_t size)
 
 bool xmrig::ServerTls::send(const char *data, size_t size)
 {
-    SSL_write(m_ssl, data, size);
+    const int written = SSL_write(m_ssl, data, static_cast<int>(size));
+    if (written != static_cast<int>(size)) {
+        return false;
+    }
 
     return write(m_write);
 }

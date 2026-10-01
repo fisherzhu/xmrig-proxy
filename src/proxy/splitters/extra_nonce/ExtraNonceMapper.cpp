@@ -135,7 +135,12 @@ void xmrig::ExtraNonceMapper::submit(SubmitEvent *event)
 
     IStrategy *strategy = m_donate && m_donate->isActive() ? m_donate : m_strategy;
 
-    m_results[strategy->submit(req)] = SubmitCtx(req.id, event->miner()->id());
+    const int64_t seq = strategy->submit(req);
+    if (seq < 0) {
+        return event->setError(Error::BadGateway);
+    }
+
+    m_results[seq] = SubmitCtx(req.id, event->miner()->id());
 }
 
 

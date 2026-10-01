@@ -83,7 +83,10 @@ bool xmrig::Client::Tls::handshake(const char* servername)
 
 bool xmrig::Client::Tls::send(const char *data, size_t size)
 {
-    SSL_write(m_ssl, data, size);
+    const int written = SSL_write(m_ssl, data, static_cast<int>(size));
+    if (written != static_cast<int>(size)) {
+        return false;
+    }
 
     return send();
 }
