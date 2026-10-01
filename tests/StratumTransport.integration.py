@@ -138,7 +138,7 @@ def connect_miner(port, tls, process, log_path):
     raise RuntimeError("proxy did not listen on the isolated port")
 
 
-def run_case(binary, tls, upstream_tls, cert, key):
+def run_case(binary, tls, upstream_tls, proxy_mode, cert, key):
     context = None
     if upstream_tls:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -146,14 +146,15 @@ def run_case(binary, tls, upstream_tls, cert, key):
     pool = FakePool(context)
     pool.start()
     port = reserve_port()
-    mode = "downstream %s / upstream %s" % ("tls" if tls else "plain", "tls" if upstream_tls else "plain")
+    mode = "%s downstream %s / upstream %s" % (
+        proxy_mode, "tls" if tls else "plain", "tls" if upstream_tls else "plain")
     with tempfile.TemporaryDirectory(prefix="t6-transport-") as temp:
         root = Path(temp)
         config = {
             "autosave": False,
             "watch": False,
             "colors": False,
-            "mode": "simple",
+            "mode": proxy_mode,
             "donate-level": 0,
             "http": {"enabled": False},
             "bind": [{"host": "127.0.0.1", "port": port, "tls": tls}],
@@ -184,9 +185,10 @@ def run_case(binary, tls, upstream_tls, cert, key):
                         assert notification["method"] == "job", notification
                         assert notification["params"]["job_id"] == "t6-fixture-job-%d" % number, notification
                     job = notification["params"]
+                    nonce = "000000" + job["blob"][84:86] if proxy_mode == "nicehash" else "00000001"
                     submit = {"id": 2, "method": "submit", "params": {
                         "id": response["result"]["id"], "job_id": job["job_id"],
-                        "nonce": "00000001", "result": "00" * 24 + "0100000000000000", "algo": "rx/0"}}
+                        "nonce": nonce, "result": "00" * 24 + "0100000000000000", "algo": "rx/0"}}
                     miner.sendall((json.dumps(submit) + "\n").encode())
                     answer = lines.read()
                     assert answer["error"] is None and answer["result"]["status"] == "OK", answer
@@ -218,9 +220,10 @@ def main():
         subprocess.run([args.openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
                         "-subj", "/CN=localhost", "-keyout", str(key), "-out", str(cert), "-days", "1"],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        run_case(args.binary, False, False, cert, key)
-        run_case(args.binary, True, False, cert, key)
-        run_case(args.binary, True, True, cert, key)
+        run_case(args.binary, False, False, "simple", cert, key)
+        run_case(args.binary, True, False, "simple", cert, key)
+        run_case(args.binary, True, True, "simple", cert, key)
+        run_case(args.binary, True, True, "nicehash", cert, key)
 
 
 if __name__ == "__main__":
